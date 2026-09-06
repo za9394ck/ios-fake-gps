@@ -2,25 +2,17 @@
 """
 ios-fake-gps sidecar.
 
-A long-lived helper that holds ONE developer connection to a tethered iPhone
-open and streams simulated GPS coordinates to it. The macOS app (SwiftUI) speaks
-to this process over stdin/stdout using newline-delimited JSON ("NDJSON").
+A long-lived helper that owns one no-root iOS developer tunnel and one
+LocationSimulation DVT channel. The macOS app speaks to this process over
+stdin/stdout using newline-delimited JSON (NDJSON).
 
-Why a persistent process instead of calling `pymobiledevice3 ... set` per point:
-iOS 17+ requires a RemoteXPC developer tunnel, and each fresh CLI invocation
-re-does an expensive handshake. For smooth movement we push a new coordinate
-~once per second, so we open the LocationSimulation DVT channel once and reuse it.
-
-Prerequisite: the tunneld daemon must be running (needs root):
-
-    sudo pymobiledevice3 remote tunneld
-
-It manages the per-device tunnels and auto-mounts the Developer Disk Image.
-This sidecar then borrows an RSD (RemoteServiceDiscovery) connection from it.
+The tunnel is created in-process through pymobiledevice3's PreferredRsdTunnel.
+On macOS this uses Apple's native remoted transport when available and falls
+back to the pure-Python userspace tunnel. Both paths run without root/admin.
 
 Protocol
 --------
-Commands in  (one JSON object per line on stdin):
+Commands in (one JSON object per line on stdin):
     {"cmd": "set",   "lat": 40.69, "lon": -74.04, "id": 12}
     {"cmd": "clear",                               "id": 13}
     {"cmd": "ping",                                "id": 14}
@@ -44,15 +36,10 @@ import sys
 from contextlib import AsyncExitStack
 from typing import Any, Optional
 
-from pymobiledevice3.exceptions import TunneldConnectionError
-from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
+from pymobiledevice3.remote.rsd_tunnel import PreferredRsdTunnel
 from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
 from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
-from pymobiledevice3.tunneld.api import (
-    TUNNELD_DEFAULT_ADDRESS,
-    get_tunneld_device_by_udid,
-    get_tunneld_devices,
-)
+from pymobiledevice3.usbmux import list_devices as list_usbmux_devices
 
 
 def emit(obj: dict[str, Any]) -> None:
@@ -65,7 +52,7 @@ def log(*args: Any) -> None:
     print("[sidecar]", *args, file=sys.stderr, flush=True)
 
 
-def describe(rsd: RemoteServiceDiscoveryService) -> dict[str, Any]:
+def describe(rsd: Any) -> dict[str, Any]:
     return {
         "udid": rsd.udid,
         "name": getattr(rsd, "name", None),
@@ -74,28 +61,16 @@ def describe(rsd: RemoteServiceDiscoveryService) -> dict[str, Any]:
     }
 
 
-async def list_devices(address: tuple[str, int]) -> list[RemoteServiceDiscoveryService]:
-    return await get_tunneld_devices(address)
+def describe_usbmux(device: Any) -> dict[str, Any]:
+    return {
+        "serial": getattr(device, "serial", None),
+        "connection": getattr(device, "connection_type", None),
+    }
 
 
-async def pick_device(
-    address: tuple[str, int], udid: Optional[str]
-) -> RemoteServiceDiscoveryService:
-    if udid:
-        rsd = await get_tunneld_device_by_udid(udid, address)
-        if rsd is None:
-            raise RuntimeError(f"device {udid} not found in tunneld")
-        return rsd
-    rsds = await get_tunneld_devices(address)
-    if not rsds:
-        raise RuntimeError("no devices available from tunneld")
-    # Close the ones we won't use; keep the first.
-    for extra in rsds[1:]:
-        try:
-            await extra.close()
-        except Exception:
-            pass
-    return rsds[0]
+async def list_devices() -> list[dict[str, Any]]:
+    devices = await list_usbmux_devices()
+    return [describe_usbmux(d) for d in devices]
 
 
 async def stdin_lines() -> "asyncio.StreamReader":
@@ -107,55 +82,42 @@ async def stdin_lines() -> "asyncio.StreamReader":
     return reader
 
 
-async def run(address: tuple[str, int], udid: Optional[str]) -> int:
-    # --- establish the persistent connection -------------------------------
+async def run(udid: Optional[str]) -> int:
+    # PreferredRsdTunnel is deliberately used instead of the old privileged
+    # tunneld HTTP daemon. It never requires sudo/admin privileges.
     try:
-        rsd = await pick_device(address, udid)
-    except TunneldConnectionError:
-        emit(
-            {
-                "event": "error",
-                "fatal": True,
-                "code": "no_tunneld",
-                "message": (
-                    "Cannot reach tunneld at "
-                    f"{address[0]}:{address[1]}. Start it with: "
-                    "sudo pymobiledevice3 remote tunneld"
-                ),
-            }
-        )
-        return 2
+        tunnel = PreferredRsdTunnel(serial=udid, autopair=True, prefer_native=True)
+        rsd = await tunnel.aopen()
     except Exception as e:  # noqa: BLE001
-        emit({"event": "error", "fatal": True, "code": "no_device", "message": str(e)})
+        emit({
+            "event": "error",
+            "fatal": True,
+            "code": "tunnel_failed",
+            "message": f"Could not establish a no-root developer tunnel: {e}",
+        })
         return 2
 
     async with AsyncExitStack() as stack:
+        stack.push_async_callback(tunnel.aclose)
         try:
             dvt = await stack.enter_async_context(DvtProvider(rsd))
             loc = await stack.enter_async_context(LocationSimulation(dvt))
         except Exception as e:  # noqa: BLE001
-            emit(
-                {
-                    "event": "error",
-                    "fatal": True,
-                    "code": "dvt_failed",
-                    "message": (
-                        f"Could not open LocationSimulation: {e}. "
-                        "Is Developer Mode enabled and the DDI mounted?"
-                    ),
-                }
-            )
+            emit({
+                "event": "error",
+                "fatal": True,
+                "code": "dvt_failed",
+                "message": f"Could not open LocationSimulation: {e}. Is Developer Mode enabled?",
+            })
             return 3
-        stack.push_async_callback(rsd.close)
 
         emit({"event": "ready", "device": describe(rsd)})
-        log("ready, simulating location for", rsd.udid)
+        log("ready, no-root tunnel established for", rsd.udid)
 
-        # --- command loop --------------------------------------------------
         reader = await stdin_lines()
         while True:
             raw = await reader.readline()
-            if not raw:  # EOF — parent closed the pipe
+            if not raw:
                 break
             line = raw.decode("utf-8", "replace").strip()
             if not line:
@@ -178,26 +140,19 @@ async def run(address: tuple[str, int], udid: Optional[str]) -> int:
                 elif cmd == "ping":
                     emit({"event": "pong", "id": mid})
                 elif cmd == "devices":
-                    devs = await list_devices(address)
-                    emit({"event": "devices", "devices": [describe(d) for d in devs]})
-                    for d in devs:
-                        if d.udid != rsd.udid:
-                            await d.close()
+                    emit({"event": "devices", "devices": await list_devices()})
                 elif cmd == "quit":
                     break
                 else:
-                    emit(
-                        {
-                            "event": "error",
-                            "fatal": False,
-                            "id": mid,
-                            "message": f"unknown cmd: {cmd!r}",
-                        }
-                    )
+                    emit({
+                        "event": "error",
+                        "fatal": False,
+                        "id": mid,
+                        "message": f"unknown cmd: {cmd!r}",
+                    })
             except Exception as e:  # noqa: BLE001
                 emit({"event": "error", "fatal": False, "id": mid, "message": str(e)})
 
-        # Best-effort: stop simulating before we drop the connection.
         try:
             await loc.clear()
         except Exception:
@@ -211,38 +166,21 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="ios-fake-gps sidecar")
     p.add_argument("--udid", default=None, help="target device UDID (default: first)")
     p.add_argument(
-        "--tunneld-host", default=TUNNELD_DEFAULT_ADDRESS[0], help="tunneld host"
-    )
-    p.add_argument(
-        "--tunneld-port", type=int, default=TUNNELD_DEFAULT_ADDRESS[1], help="tunneld port"
-    )
-    p.add_argument(
-        "--list", action="store_true", help="list devices as one NDJSON event and exit"
+        "--list", action="store_true", help="list USB/network-attached devices and exit"
     )
     return p.parse_args()
 
 
 async def amain() -> int:
     ns = parse_args()
-    address = (ns.tunneld_host, ns.tunneld_port)
     if ns.list:
         try:
-            devs = await list_devices(address)
-        except TunneldConnectionError:
-            emit(
-                {
-                    "event": "error",
-                    "fatal": True,
-                    "code": "no_tunneld",
-                    "message": "tunneld not running (sudo pymobiledevice3 remote tunneld)",
-                }
-            )
+            emit({"event": "devices", "devices": await list_devices()})
+            return 0
+        except Exception as e:  # noqa: BLE001
+            emit({"event": "error", "fatal": True, "code": "usbmux_failed", "message": str(e)})
             return 2
-        emit({"event": "devices", "devices": [describe(d) for d in devs]})
-        for d in devs:
-            await d.close()
-        return 0
-    return await run(address, ns.udid)
+    return await run(ns.udid)
 
 
 if __name__ == "__main__":
