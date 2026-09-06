@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Freeze the Python sidecar + tunnel daemon into ONE standalone binary
+# Freeze the Python sidecar + no-root tunnel runtime into ONE standalone binary
 # (dist_pyi/fakegps-runtime/) using PyInstaller, so the shipped app needs no
 # Python install on the target machine.
 set -euo pipefail
