@@ -4,8 +4,8 @@ Combined runtime entry point, frozen by PyInstaller into a single standalone
 binary that ships inside FakeGPS.app — so end users need no Python install.
 
 Usage:
-    fakegps-runtime tunneld [args...]   # runs `pymobiledevice3 remote tunneld`
-    fakegps-runtime sidecar [args...]   # runs the location-simulation sidecar
+    fakegps-runtime sidecar [args...]   # runs the no-root location sidecar
+    fakegps-runtime usbmux [args...]    # lists attached devices without a tunnel
 """
 import sys
 
@@ -14,12 +14,6 @@ def main() -> int:
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     rest = sys.argv[2:]
 
-    if mode == "tunneld":
-        from pymobiledevice3.__main__ import main as pmd3_main
-        sys.argv = ["pymobiledevice3", "remote", "tunneld"] + rest
-        pmd3_main()
-        return 0
-
     if mode == "sidecar":
         import asyncio
         import gpsd_helper
@@ -27,8 +21,6 @@ def main() -> int:
         return asyncio.run(gpsd_helper.amain())
 
     if mode == "usbmux":
-        # List USB/network-attached devices WITHOUT needing the tunnel — used by
-        # the app's onboarding to detect a plugged-in iPhone. Prints one JSON line.
         import asyncio
         import json
 
@@ -49,7 +41,7 @@ def main() -> int:
             print(json.dumps({"devices": [], "error": str(e)}))
         return 0
 
-    sys.stderr.write("usage: fakegps-runtime {tunneld|sidecar|usbmux} [args...]\n")
+    sys.stderr.write("usage: fakegps-runtime {sidecar|usbmux} [args...]\n")
     return 2
 
 
