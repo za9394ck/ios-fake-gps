@@ -18,16 +18,19 @@ jobs:
         working-directory: macapp
         run: swift build
 
+      - name: Create Python virtual environment
+        run: python3 -m venv .venv
+
       - name: Install Python runtime dependencies
-        run: python3 -m pip install -r sidecar/requirements.txt
+        run: .venv/bin/python -m pip install -r sidecar/requirements.txt
 
       - name: Check Python syntax
         run: |
-          python3 -m py_compile sidecar/gpsd_helper.py sidecar/fakegps_runtime.py
+          .venv/bin/python -m py_compile sidecar/gpsd_helper.py sidecar/fakegps_runtime.py
 
       - name: Check pymobiledevice3 no-root API
         run: |
-          python3 - <<'PY'
+          .venv/bin/python - <<'PY'
           from pymobiledevice3.remote.rsd_tunnel import PreferredRsdTunnel
           from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
           from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
