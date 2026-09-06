@@ -1,21 +1,15 @@
 import SwiftUI
 
-/// A guided checklist shown until the app is connected to a device. It detects
-/// each prerequisite live (iPhone plugged in, tunnel running) and offers the
-/// action for the current step — so a new user never has to read the docs.
-///
-/// The Python engine is bundled inside the app, so there is nothing to download;
-/// the only steps are the ones macOS/Apple require a human to do.
+/// A guided checklist shown until the app is connected to a device.
+/// The developer tunnel is created inside the sidecar, so there is no
+/// privileged daemon or administrator password step.
 struct OnboardingView: View {
     @EnvironmentObject var config: AppConfig
     @EnvironmentObject var sidecar: Sidecar
-    @EnvironmentObject var tunnel: TunnelManager
     @EnvironmentObject var devices: DeviceWatcher
 
     private var engineReady: Bool { config.isValid }
     private var deviceReady: Bool { devices.hasDevice }
-    private var tunnelReady: Bool { tunnel.isUp }
-    private var canConnect: Bool { engineReady && tunnelReady }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -44,21 +38,9 @@ struct OnboardingView: View {
                     }
                 }
                 step(
-                    n: 3, done: tunnelReady,
-                    title: "Start the secure tunnel",
-                    detail: tunnelReady
-                        ? "Tunnel daemon is running."
-                        : "Opens a developer tunnel to the device. Asks for your password once."
-                ) {
-                    if !tunnelReady {
-                        Button("Start tunnel (admin)…") { tunnel.startTunneld() }
-                            .disabled(!engineReady)
-                    }
-                }
-                step(
-                    n: 4, done: false, isFinal: true,
+                    n: 3, done: false, isFinal: true,
                     title: "Connect",
-                    detail: "Link the app to your device and start spoofing."
+                    detail: "The app will establish the developer tunnel automatically — no admin password required."
                 ) {
                     connectControl
                 }
@@ -94,12 +76,12 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(msg).font(.caption).foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Try again") { sidecar.start() }.disabled(!canConnect)
+                Button("Try again") { sidecar.start() }.disabled(!engineReady)
             }
         default:
             Button("Connect") { sidecar.start() }
                 .buttonStyle(.borderedProminent)
-                .disabled(!canConnect)
+                .disabled(!engineReady || !deviceReady)
         }
     }
 
