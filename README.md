@@ -26,13 +26,13 @@
 
 Set a fixed location **or** play a moving route (with adjustable speed, looping
 and GPS jitter) on a **non-jailbroken** iPhone. Everything is driven from a
-native macOS app — the iPhone just needs to be plugged in.
+native macOS app — the iPhone just needs to be connected.
 
 This is the iOS counterpart to Android's **Lockito**. Unlike Android, iOS has no
 public "mock location" API, so an app installed *on the phone* can't fake GPS for
 other apps. Instead the location is driven from a tethered Mac over Apple's
-**developer tunnel** — the same mechanism Xcode uses to simulate location while
-debugging. Whatever you set is seen **system-wide** by every app on the device.
+**developer tunnel** — the same mechanism used by Apple's developer tooling to
+simulate location. Whatever you set is seen **system-wide** by apps on the device.
 
 ![The macOS app: route mode over the Bay Area, tunnel connected](docs/app.png)
 
@@ -47,28 +47,32 @@ debugging. Whatever you set is seen **system-wide** by every app on the device.
    [**Releases**](https://github.com/orestislef/ios-fake-gps/releases) page and
    unzip it.
 2. Drag **FakeGPS.app** into your **Applications** folder.
-3. First launch only: macOS warns it's from an unidentified developer (the app
-   isn't notarized). **Right-click the app → Open** and confirm. If it still
-   refuses, run once:
+3. First launch only: macOS may warn that the app is from an unidentified
+   developer (the app isn't notarized). **Right-click the app → Open** and
+   confirm. If it still refuses, run once:
    ```bash
    xattr -dr com.apple.quarantine /Applications/FakeGPS.app
    ```
-4. Open the app. A short **setup checklist** walks you through the rest — plug in
-   your iPhone, start the tunnel, and connect.
+4. Open the app, connect your iPhone with USB, tap **Trust** on the iPhone if
+   prompted, and make sure **Developer Mode** is enabled.
+5. Follow the in-app checklist and connect to the device.
 
-That's it. The app has the engine bundled inside it, so **you don't need to
-install Python or anything else**, and you never need the Terminal.
+**No admin password is required. No `sudo` is required.** The app establishes
+the iOS developer tunnel in-process using `pymobiledevice3`'s no-root RSD
+transport. On supported macOS versions it prefers Apple's native remoted
+transport and can fall back to the pure-Python userspace tunnel.
+
+The released app bundles its Python runtime and dependencies, so normal users
+do **not** need to install Python or use the Terminal.
 
 ### What the checklist asks for
 
-These are the only steps Apple requires a human to do — nothing to download:
+- **Connect your iPhone** — plug it in with USB, tap **Trust** if prompted, and
+  turn on Developer Mode (Settings ▸ Privacy & Security ▸ Developer Mode).
+- **Connect** — the app establishes the developer tunnel and opens the DVT
+  LocationSimulation service automatically.
 
-- **Connect your iPhone** — plug it in with a USB cable, tap **Trust**, and turn
-  on **Developer Mode** (Settings ▸ Privacy & Security ▸ Developer Mode). The app
-  shows ✓ the moment it sees the device.
-- **Start the secure tunnel** — one button; it asks for your Mac password once
-  per session (the tunnel runs as root, which Apple requires).
-- **Connect** — links the app to the device. Done.
+There is **no privileged tunnel daemon** and no administrator-password prompt.
 
 ## Features
 
@@ -80,53 +84,79 @@ These are the only steps Apple requires a human to do — nothing to download:
 - **Address / place search** powered by MapKit.
 - **Live position marker**, plus distance and ETA readouts.
 - **Auto-reset on exit** — disconnecting or quitting restores the phone's real
-  location automatically, so you're never left on a fake position.
+  location automatically.
 
 ## How it works
 
 ```
 macOS app (SwiftUI + MapKit)            bundled engine              iPhone
-  search / drop pins / route ─────────▶  pymobiledevice3  ──tunnel──▶  every app
-  speed · loop · jitter      ◀─────────  LocationSimulation   (DDI)     sees fake GPS
+  search / drop pins / route ─────────▶  pymobiledevice3  ──RSD/DVT──▶ every app
+  speed · loop · jitter      ◀─────────  LocationSimulation             sees fake GPS
   interpolates the movement              (frozen, inside .app)
 ```
 
-- The **app** owns the map, route editing and movement interpolation, so speed /
-  pause / loop / jitter are all controlled on the Mac side.
-- The **engine** is a small Python program (built on
-  [pymobiledevice3](https://github.com/doronz88/pymobiledevice3)) frozen into a
-  standalone binary inside `FakeGPS.app` — no Python needed on your Mac. It holds
-  one developer connection open and applies each coordinate.
-- A small **tunnel daemon** (started by the app, as root) opens the developer
-  tunnel and mounts the Developer Disk Image. Required on iOS 17+.
+- The **app** owns the map, route editing and movement interpolation, so speed,
+  pause, loop and jitter are controlled on the Mac side.
+- The **engine** is a small Python program built on
+  [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) and frozen into
+  a standalone binary inside `FakeGPS.app` — no Python is needed for normal use.
+- The engine opens a **no-root RSD developer tunnel** and then a DVT
+  `LocationSimulation` channel. On macOS, `PreferredRsdTunnel` tries the native
+  remoted transport first and falls back to its userspace implementation.
+- The old privileged `tunneld` daemon and its local HTTP control API are no
+  longer used.
 
 ## Requirements
 
-- A Mac on **Apple silicon** (the prebuilt app is `arm64`; tested on M1 and M4).
-- An iPhone on **iOS 17 or newer** with a USB cable and **Developer Mode** on.
+### End users
+
+- A Mac on **Apple silicon** (the prebuilt app is `arm64`).
+- An iPhone on **iOS 17 or newer**.
+- USB connection for initial pairing/tunnel setup.
+- **Developer Mode** enabled on the iPhone.
+
+### Developers
+
+- Xcode / Swift toolchain capable of building the macOS package.
+- Python 3 with `venv` support.
 
 ## For developers — build from source
 
-The app is a Swift Package (`macapp/`) plus a Python engine (`sidecar/`).
+The project is a Swift Package (`macapp/`) plus a Python engine (`sidecar/`).
 
-Set up the Python side once (kept in `~/.ios-fake-gps`, **not** `~/Documents`,
-because the root tunnel daemon can't read TCC-protected folders):
+Set up the Python environment once:
 
 ```bash
 ./setup.sh
 ```
 
-Run the app from source:
+This creates the development environment under `~/.ios-fake-gps/venv` and
+installs the pinned `pymobiledevice3` dependency.
+
+Build the Swift package:
 
 ```bash
-cd macapp && swift run        # or open macapp/Package.swift in Xcode and Run
+cd macapp
+swift build
 ```
 
-Produce the bundled, double-clickable app and a release zip:
+Run the macOS app from source:
 
 ```bash
-./scripts/build_app.sh        # builds the engine + app -> dist/FakeGPS.app + zip
+cd macapp
+swift run
 ```
+
+Or open `macapp/Package.swift` in Xcode and run the package/app target.
+
+Build the bundled, double-clickable application and release zip:
+
+```bash
+./scripts/build_app.sh
+```
+
+The build produces the app under `dist/` and bundles the Python runtime inside
+it, so the resulting app does not require the developer's virtual environment.
 
 Regenerate the icon:
 
@@ -140,46 +170,157 @@ iconutil -c icns assets/AppIcon.iconset -o assets/AppIcon.icns
 ```
 ios-fake-gps/
 ├── macapp/Sources/FakeGPS/   the macOS app (SwiftUI + MapKit)
-├── sidecar/                  the Python engine + runtime entry point
+├── sidecar/                  Python location engine + runtime entry point
 ├── scripts/                  build_runtime.sh, build_app.sh, make_icon.py
 ├── assets/                   app icon
 └── docs/                     screenshots
 ```
 
-## Command-line use (optional)
+## Command-line testing (developers)
 
-The engine inside the app also works from the Terminal. Start the tunnel:
+The sidecar can be run directly during development. This is useful for testing
+the no-root tunnel and DVT location service without launching the SwiftUI app.
 
-```bash
-sudo "/Applications/FakeGPS.app/Contents/Resources/runtime/fakegps-runtime" tunneld
-```
+### 1. Check that the iPhone is visible over USB
 
-Then set a location directly with `pymobiledevice3` (bundled in the app), e.g.
-Liberty Island:
+From the repository root:
 
 ```bash
-"/Applications/FakeGPS.app/Contents/Resources/runtime/fakegps-runtime" sidecar --list
+.venv/bin/python sidecar/fakegps_runtime.py usbmux --list
 ```
+
+Expected output is JSON containing the connected device, for example:
+
+```json
+{"devices":[{"serial":"00008140-000211213484801C","connection":"USB"}]}
+```
+
+The serial/UDID will be different on every device.
+
+### 2. Start the no-root sidecar
+
+Start it as a long-running process and **do not pipe stdin** if you want to
+observe the simulated location on the phone:
+
+```bash
+.venv/bin/python sidecar/fakegps_runtime.py sidecar \
+  --udid YOUR_DEVICE_UDID
+```
+
+When the tunnel and DVT LocationSimulation service are ready, the sidecar
+prints an event similar to:
+
+```json
+{"event":"ready","device":{"udid":"YOUR_DEVICE_UDID",...}}
+```
+
+No `sudo` or administrator password is required.
+
+### 3. Set a location
+
+While the sidecar is still running, type one JSON command and press Enter:
+
+```json
+{"cmd":"set","lat":47.6062,"lon":-122.3321}
+```
+
+For example, the coordinates above are Seattle downtown. A successful command
+returns:
+
+```json
+{"event":"ok","id":null}
+```
+
+Leave the sidecar running while checking Apple Maps or another location-aware
+app on the iPhone. If the process exits, its cleanup handler clears the
+simulated location.
+
+You can also use an explicit request ID:
+
+```json
+{"cmd":"set","lat":47.6062,"lon":-122.3321,"id":1}
+```
+
+### 4. Clear the simulated location
+
+To restore the phone's real GPS location:
+
+```json
+{"cmd":"clear"}
+```
+
+Expected response:
+
+```json
+{"event":"ok","id":null}
+```
+
+### 5. Quit cleanly
+
+```json
+{"cmd":"quit"}
+```
+
+The sidecar clears the simulated location before closing the DVT/tunnel
+connection and emits:
+
+```json
+{"event":"bye"}
+```
+
+### Supported sidecar commands
+
+| Command | Description |
+|---|---|
+| `set` | Set simulated latitude/longitude |
+| `clear` | Restore real device location |
+| `ping` | Health check; returns `pong` |
+| `devices` | List USB/network-visible devices |
+| `quit` | Clear location and shut down |
+
+For example:
+
+```text
+{"cmd":"ping","id":2}
+{"cmd":"devices"}
+{"cmd":"clear","id":3}
+{"cmd":"quit"}
+```
+
+The sidecar uses newline-delimited JSON (NDJSON): one JSON object per input
+line and one event per output line. Human-readable diagnostics are written to
+stderr; stdout is reserved for protocol events.
 
 ## Troubleshooting
 
 - **App won't open ("unidentified developer")** — right-click → Open, or run
   `xattr -dr com.apple.quarantine /Applications/FakeGPS.app`.
-- **Tunnel won't start** — make sure you entered the admin password; the daemon
-  needs root. Logs are at `/tmp/ios-fake-gps-tunneld.log`.
-- **iPhone never detected** — check the cable, tap **Trust** on the phone, and
-  confirm **Developer Mode** is enabled (then reboot the phone).
-- **"Could not open LocationSimulation"** — Developer Mode is off or the Developer
-  Disk Image hasn't mounted yet; give the tunnel a few seconds after starting.
+- **iPhone never detected** — check the USB cable, tap **Trust** on the phone,
+  and confirm Developer Mode is enabled. If necessary, reconnect the phone or
+  reboot it.
+- **Could not establish a no-root developer tunnel** — make sure the iPhone is
+  unlocked, trusted, connected over USB, and Developer Mode is enabled. Close
+  other developer/tunneling tools that may be holding the device connection.
+- **Could not open LocationSimulation** — verify Developer Mode and allow a few
+  seconds for the developer services to become available after connecting.
+- **The location changes and immediately returns to the real location** — make
+  sure the sidecar process is still running. The sidecar automatically clears
+  the simulated location when it receives EOF or exits.
+- **`urllib3` reports `NotOpenSSLWarning` on an older local Python** — this is a
+  warning from the local Python/OpenSSL combination. It does not by itself mean
+  that the RSD/DVT tunnel failed; check whether the sidecar reaches the
+  `ready` event.
 
 ## Limitations
 
-- The Mac must stay tethered (USB; Wi-Fi works after an initial USB pairing).
-- The tunnel runs as root, so it asks for your password once per session — an
-  Apple requirement that can't be removed (it's why this can't be an App Store
-  app, and why no on-device-only app can do this).
-- It sets the reported location only; it doesn't fake Wi-Fi or cell-tower
-  signals, so a few apps that cross-check those may notice the mismatch.
+- The Mac must stay connected to the iPhone while the developer tunnel is in
+  use. Wi-Fi may be available after the device has been paired, depending on
+  the developer transport and device state.
+- This changes the location reported through Apple's developer location
+  simulation path. It does **not** fake Wi-Fi, cell-tower, Bluetooth, or other
+  independent signals, so apps that cross-check multiple signals may detect a
+  mismatch.
+- The prebuilt release is currently targeted at Apple silicon Macs.
 
 ## Contributing
 
