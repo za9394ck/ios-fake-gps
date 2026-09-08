@@ -12,7 +12,6 @@ struct ContentView: View {
     @EnvironmentObject var config: AppConfig
     @EnvironmentObject var sidecar: Sidecar
     @EnvironmentObject var engine: SimulationEngine
-    @EnvironmentObject var tunnel: TunnelManager
 
     @State private var mode: EditMode = .route
     @StateObject private var mapController = MapController()
@@ -47,8 +46,6 @@ struct ContentView: View {
         )
         .overlay(alignment: .top) { searchOverlay }
     }
-
-    // MARK: - Search overlay
 
     private var searchOverlay: some View {
         VStack(spacing: 0) {
@@ -103,8 +100,6 @@ struct ContentView: View {
         search.clear()
     }
 
-    // MARK: - Sidebar
-
     private var sidebar: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -123,20 +118,10 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Device").font(.headline)
 
-            statusRow(
-                ok: tunnel.isUp,
-                label: tunnel.isUp ? "Tunnel daemon running" : "Tunnel daemon not running"
-            )
-            if !tunnel.isUp {
-                Button("Start tunnel (admin)…") { tunnel.startTunneld() }
-                Text("Needs your password. Keep the iPhone plugged in with Developer Mode on.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
             switch sidecar.state {
             case .stopped:
                 Button("Connect") { sidecar.start() }
-                    .disabled(!tunnel.isUp || !config.isValid)
+                    .disabled(!config.isValid)
             case .launching:
                 HStack { ProgressView().controlSize(.small); Text("Connecting…") }
             case let .ready(dev):
@@ -145,7 +130,7 @@ struct ContentView: View {
             case let .failed(msg):
                 statusRow(ok: false, label: "Failed")
                 Text(msg).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-                Button("Retry") { sidecar.start() }.disabled(!tunnel.isUp)
+                Button("Retry") { sidecar.start() }.disabled(!config.isValid)
             }
 
             if !config.isValid {
@@ -185,7 +170,6 @@ struct ContentView: View {
 
             Toggle("Loop route", isOn: $engine.loop)
 
-            // Transport controls
             HStack(spacing: 10) {
                 switch engine.playback {
                 case .idle:
@@ -239,18 +223,14 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Helpers
-
     private var canPlay: Bool {
         sidecar.state.isReady && engine.waypoints.count >= 1
     }
 
     private func handleTap(_ c: CLLocationCoordinate2D) {
         switch mode {
-        case .teleport:
-            engine.teleport(to: c)
-        case .route:
-            engine.addWaypoint(c)
+        case .teleport: engine.teleport(to: c)
+        case .route: engine.addWaypoint(c)
         }
     }
 

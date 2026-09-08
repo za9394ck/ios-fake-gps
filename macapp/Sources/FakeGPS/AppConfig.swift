@@ -1,6 +1,6 @@
 import Foundation
 
-/// How the Python side (sidecar / tunnel / usbmux) is provided.
+/// How the Python side (sidecar / usbmux) is provided.
 enum RuntimeKind {
     /// A standalone PyInstaller binary shipped inside FakeGPS.app. No Python
     /// install needed on the machine.
@@ -9,9 +9,9 @@ enum RuntimeKind {
     case dev(python: URL, script: URL)
 }
 
-/// Resolves how to launch the runtime in its three modes: `sidecar`, `tunneld`
-/// and `usbmux`. Both bundled and dev paths funnel through the same
-/// `fakegps_runtime` entry point, so behaviour is identical.
+/// Resolves how to launch the runtime in its two modes: `sidecar` and `usbmux`.
+/// Both bundled and dev paths funnel through the same `fakegps_runtime` entry
+/// point, so behaviour is identical.
 @MainActor
 final class AppConfig: ObservableObject {
     let runtime: RuntimeKind
@@ -45,12 +45,6 @@ final class AppConfig: ObservableObject {
 
     var sidecarLaunch: (executable: URL, args: [String]) { launch("sidecar") }
     var usbmuxLaunch: (executable: URL, args: [String]) { launch("usbmux") }
-
-    /// Tunnel daemon as (path, args) for the privileged osascript shell.
-    var tunneldLaunch: (path: String, args: [String]) {
-        let l = launch("tunneld")
-        return (l.executable.path, l.args)
-    }
 
     var isValid: Bool {
         switch runtime {
